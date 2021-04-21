@@ -1,0 +1,310 @@
+ifdef::env-github[]
+:tip-caption: :bulb:
+:note-caption: :information_source:
+:important-caption: :heavy_exclamation_mark:
+:caution-caption: :fire:
+:warning-caption: :warning:
+endif::[]
+
+= Terraform VPC and EKS cluster
+This repo gives a quick getting started guide for deploying your Amazon EKS
+cluster and VPC using Hashicorp Terraform.
+
+== Installation
+
+We first need to make sure we have all the necessary components installed. This
+means installing:
+
+* link:https://github.com/kubernetes-sigs/aws-iam-authenticator/[AWS IAM
+  Authenticator]
+* link:https://www.terraform.io/intro/getting-started/install.html[Terraform]
+* link:https://kubernetes.io/docs/tasks/tools/install-kubectl/[kubectl]
+
+The rest of this `readme` will walk through installing these components on
+macOS.
+
+=== Install AWS IAM Authenticator
+
+For authentication with an Amazon Elastic Container Service for Kubernetes you
+must use Amazon Identity and Access Management. To do so you must use an open
+source tool called the AWS IAM Authenticator, this was built in partnership with
+Heptio. After EKS was launched it was then migrated to ownership via SIG-AWS.
+
+To install this, you can either use the vendored and compiled versions from the
+Github releases page or you can use `go` to install from source.
+
+[source,shell]
+----
+go get -u github.com/kubernetes-sigs/aws-iam-authenticator
+----
+
+Now that we have this installed we should make sure it is in our path, to check
+this we can run `aws-iam-authenticator` this should return the help
+documentation for the binary.
+
+Once we have validated that it is installed we can move on to installing
+`terraform`.
+
+=== Install Terraform
+
+To install `terraform` on macOS, the easiest way I have found is to use the
+`homebrew` packaged version. 
+
+[source,shell]
+----
+brew install terraform
+----
+
+This, like any `homebrew` package will install the `terraform` binaries into
+`/usr/local/bin/` which should already be configured in your path.
+
+With `terraform` installed we can then move on to installing the Kubernetes CLI,
+`kubectl`
+
+=== Install kubectl
+
+To install `kubectl` the easiest way again is to use `homebrew` on macOS.
+
+[source,shell]
+----
+brew install kubernetes-cli
+----
+After this has completed we should have access to `kuebctl`.
+
+== Create VPC
+
+We first follow instructions on how to deploy VPC:
+
+* link:https://medium.com/appgambit/terraform-aws-vpc-with-private-public-subnets-with-nat-4094ad2ab331[Deploy VPC]
+
+== Provisioning an EKS Cluster w/ Terraform
+
+Before we can get started we need to understand the structure we 
+will use. We will be using the existing structure we create earlier. 
+First, we need to create a new child module and name it "eks". Inside 
+the new module, we will copy all files from the link except “vpc.tf” 
+and "workstation-external-ip.tf"
+
+* link:https://github.com/christopherhein/terraform-eks/tree/master/cluster[Files to copy]
+
+After we copy files, we need to adjust all variables to be compatible
+with the existing infrastructure.
+
+In root module, we need to add new variables to existing files.
+
+We need to add new module to our "main.tf" file in root module.
+
+We need to change local user data inside "eks-worker-nodes.tf" from
+
+[source,shell]
+----
+locals {
+  demo-node-userdata = <<USERDATA
+#!/bin/bash -xe
+CA_CERTIFICATE_DIRECTORY=/etc/kubernetes/pki
+CA_CERTIFICATE_FILE_PATH=$CA_CERTIFICATE_DIRECTORY/ca.crt
+mkdir -p $CA_CERTIFICATE_DIRECTORY
+echo "${aws_eks_cluster.demo.certificate_authority.0.data}" | base64 -d >  $CA_CERTIFICATE_FILE_PATH
+INTERNAL_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
+sed -i s,MASTER_ENDPOINT,${aws_eks_cluster.demo.endpoint},g /var/lib/kubelet/kubeconfig
+sed -i s,CLUSTER_NAME,${var.cluster-name},g /var/lib/kubelet/kubeconfig
+sed -i s,REGION,${data.aws_region.current.name},g /etc/systemd/system/kubelet.service
+sed -i s,MAX_PODS,20,g /etc/systemd/system/kubelet.service
+sed -i s,MASTER_ENDPOINT,${aws_eks_cluster.demo.endpoint},g /etc/systemd/system/kubelet.service
+sed -i s,INTERNAL_IP,$INTERNAL_IP,g /etc/systemd/system/kubelet.service
+DNS_CLUSTER_IP=10.100.0.10
+if [[ $INTERNAL_IP == 10.* ]] ; then DNS_CLUSTER_IP=172.20.0.10; fi
+sed -i s,DNS_CLUSTER_IP,$DNS_CLUSTER_IP,g /etc/systemd/system/kubelet.service
+sed -i s,CERTIFICATE_AUTHORITY_FILE,$CA_CERTIFICATE_FILE_PATH,g /var/lib/kubelet/kubeconfig
+sed -i s,CLIENT_CA_FILE,$CA_CERTIFICATE_FILE_PATH,g  /etc/systemd/system/kubelet.service
+systemctl daemon-reload
+systemctl restart kubelet
+USERDATA
+}
+----
+
+To look line this:
+
+[source,shell]
+----
+locals {
+  demo-node-userdata = <<USERDATA
+#!/bin/bash -xe
+/etc/eks/bootstrap.sh <cluster-name>
+USERDATA
+}
+----
+
+* link:https://aws.amazon.com/blogs/opensource/improvements-eks-worker-node-provisioning/[AWS worker node provisioning]
+
+Before we can get started we need to make sure we have all the providers
+configured and we are in the right directory.
+
+Now we're in our `cluster` directory we can then run `init` to load all the
+providers into the current session.
+
+[source,shell]
+----
+terraform init
+----
+
+[.output]
+....
+
+Initializing provider plugins...
+
+Terraform has been successfully initialized!
+
+You may now begin working with Terraform. Try running "terraform plan" to see
+any changes that are required for your infrastructure. All Terraform commands
+should now work.
+
+If you ever set or change modules or backend configuration for Terraform,
+rerun this command to reinitialize your working directory. If you forget, other
+commands will detect it and remind you to do so if necessary.
+....
+
+Now that we have `terraform` initialized and ready for use we can run `plan`
+which will show us what the config files will be creating. The output below has
+been truncated for breviety.
+
+[source,shell]
+----
+terraform apply
+----
+
+[.output]
+....
+Refreshing Terraform state in-memory prior to plan...
+The refreshed state will be used to calculate this plan, but will not be
+persisted to local or remote state storage.
+
+Plan: 24 to add, 0 to change, 0 to destroy.
+
+------------------------------------------------------------------------
+
+Note: You didn't specify an "-out" parameter to save this plan, so Terraform
+can't guarantee that exactly these actions will be performed if
+"terraform apply" is subsequently run.
+....
+
+With this output you can see all the resources that will be created on your
+behalf using `terraform`. If all this looks okay, we can then provision the
+cluster.
+
+Before we can use the cluster we need to output the
+`aws-auth` configmap which will allow our nodes to connect to the cluster.
+
+[source,shell]
+----
+terraform output config-map-aws-auth > aws-auth.yaml
+----
+
+With this file out you can apply the `aws-auth` configmap.
+
+== Connecting to your EKS Cluster
+
+Now that we have all the files in-place we can login to the cluster
+
+[source,shell]
+----
+aws eks --region <region> update-kubeconfig --name <cluster name>
+----
+
+Now we can check the connection to the Amazon EKS cluster but running `kubectl`.
+
+[source,shell]
+----
+kubectl get all
+----
+
+[.output]
+....
+NAME                 TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+service/kubernetes   ClusterIP   10.100.0.1   <none>        443/TCP   10m
+....
+
+With this working, we can then `apply` the `aws-auth` configmap.
+
+[source,shell]
+----
+kubectl apply -f aws-auth.yaml
+----
+
+[.output]
+....
+configmap/aws-auth created
+....
+
+Now if we go and list `nodes` we should see that we have a full cluster up and
+running and ready to use!
+
+[source,shell]
+----
+kubectl get nodes
+----
+
+== Changing autoscaling group to use spot instances
+
+We need to replace the launch configuration with 
+the launch template and add the necessary lines to autoscaling.
+
+We can use this link to do so:
+
+* link:https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/autoscaling_group[Terraform autoscaling group]
+
+Where we can create necessary changes to our code under: 
+"Mixed Instances Policy with Spot Instances and Capacity Rebalance"
+
+== Configuring backed to s3 and dynamoDB
+
+First, we need to create S3 and dynamoDB table through UI console.
+
+Then we need to create terraform.tf file in root module.
+
+And define configurations as follow:
+
+[source,shell]
+----
+terraform {
+ backend "s3" {
+ encrypt = true
+ bucket = "vlad-eks-backend-2020c"
+ dynamodb_table = "20c-state-lock"
+ region = "us-east-1"
+ key = "local-modules-cluster/terraform.tfstate"
+}
+}
+----
+
+Now we’re creating this file, we need to initialized it.
+
+[source,shell]
+----
+terraform init
+----
+
+[.output]
+....
+
+Initializing provider plugins...
+
+Terraform has been successfully initialized!
+....
+
+== Conclusion
+
+As you can see by this demo you can do full cluster operations for your Amazon
+EKS cluster using `terraform`. You have the ability to provision a highly
+available Kubernetes cluster backed by Amazon EKS and then deploy any number of
+Kubernetes resources into the cluster.
+
+== Hint
+
+We need to make sure to chose a unique CIDR block for our VPC, so when we 
+create a new one they don’t conflict.
+
+We need to understand the correct structure of the file we create for future 
+creation of terraform resources. Where we can use root and child modules.
+
+
